@@ -71,8 +71,10 @@ public class ServiceAccountTokenProvider : TokenProvider {
     }
     self.init(credentialsData:credentialsData, scopes:scopes)
   }
-  
-  public func withToken(_ callback:@escaping (Token?, Error?) -> Void) throws {
+  public func withToken(_ callback: @escaping (Token?, Error?) -> Void) throws {
+    try with(targetAudience: nil, callback)
+  }
+  public func with(targetAudience: String? = nil, _ callback:@escaping (Token?, Error?) -> Void) throws {
 
     // leave spare at least one second :)
     if let token = token, token.timeToExpiry() > 1 {
@@ -84,6 +86,7 @@ public class ServiceAccountTokenProvider : TokenProvider {
     let exp = iat.addingTimeInterval(3600)
     let jwtClaimSet = JWTClaimSet(Issuer:credentials.ClientEmail,
                                   Audience:credentials.TokenURI,
+                                  TargetAudience: targetAudience,
                                   Scope:  scopes.joined(separator: " "),
                                   IssuedAt: Int(iat.timeIntervalSince1970),
                                   Expiration: Int(exp.timeIntervalSince1970))

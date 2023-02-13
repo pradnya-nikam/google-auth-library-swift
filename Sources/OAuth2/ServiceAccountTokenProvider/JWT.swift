@@ -28,6 +28,7 @@ struct JWTHeader : Codable {
 struct JWTClaimSet : Codable {
   let Issuer : String
   let Audience : String
+  let TargetAudience : String?
   let Scope : String
   let IssuedAt : Int
   let Expiration : Int
@@ -37,6 +38,7 @@ struct JWTClaimSet : Codable {
     case Scope = "scope"
     case IssuedAt = "iat"
     case Expiration = "exp"
+    case TargetAudience = "target_audience"
   }
 }
 
