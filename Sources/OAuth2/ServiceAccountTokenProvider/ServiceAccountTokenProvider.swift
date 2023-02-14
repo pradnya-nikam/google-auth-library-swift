@@ -44,7 +44,7 @@ struct ServiceAccountCredentials : Codable {
 
 public class ServiceAccountTokenProvider : TokenProvider {
   public var token: Token?
-  
+  public var idToken: IDToken?
   var credentials : ServiceAccountCredentials
   var scopes : [String]
   var rsaKey : RSAKey
@@ -72,9 +72,6 @@ public class ServiceAccountTokenProvider : TokenProvider {
     self.init(credentialsData:credentialsData, scopes:scopes)
   }
   public func withToken(_ callback: @escaping (Token?, Error?) -> Void) throws {
-    try with(targetAudience: nil, callback)
-  }
-  public func with(targetAudience: String? = nil, _ callback:@escaping (Token?, Error?) -> Void) throws {
 
     // leave spare at least one second :)
     if let token = token, token.timeToExpiry() > 1 {
@@ -86,7 +83,7 @@ public class ServiceAccountTokenProvider : TokenProvider {
     let exp = iat.addingTimeInterval(3600)
     let jwtClaimSet = JWTClaimSet(Issuer:credentials.ClientEmail,
                                   Audience:credentials.TokenURI,
-                                  TargetAudience: targetAudience,
+                                  TargetAudience: nil,
                                   Scope:  scopes.joined(separator: " "),
                                   IssuedAt: Int(iat.timeIntervalSince1970),
                                   Expiration: Int(exp.timeIntervalSince1970))
@@ -114,6 +111,55 @@ public class ServiceAccountTokenProvider : TokenProvider {
         callback(self.token, error)
       } else {
         callback(nil, error)
+      }
+    }
+    task.resume()
+  }
+
+  public func createIDToken(_ targetAudience: String? = nil, completion:@escaping (IDToken?, Error?) -> Void) throws {
+
+    // leave spare at least one second :)
+    if let idToken = idToken, idToken.timeToExpiry() > 1 {
+      completion(idToken, nil)
+      return
+    }
+
+    let iat = Date()
+    let exp = iat.addingTimeInterval(3600)
+
+    // Remove scope if target audience is present. Scope and target audience both are not supported together.
+
+    let scope = targetAudience == nil ? scopes.joined(separator: " ") : ""
+    let jwtClaimSet = JWTClaimSet(Issuer:credentials.ClientEmail,
+                                  Audience:credentials.TokenURI,
+                                  TargetAudience: targetAudience,
+                                  Scope:  "",
+                                  IssuedAt: Int(iat.timeIntervalSince1970),
+                                  Expiration: Int(exp.timeIntervalSince1970))
+    let jwtHeader = JWTHeader(Algorithm: "RS256",
+                              Format: "JWT")
+    let msg = try JWT.encodeWithRS256(jwtHeader:jwtHeader,
+                                      jwtClaimSet:jwtClaimSet,
+                                      rsaKey:rsaKey)
+    let json: [String: Any] = ["grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+                               "assertion": msg]
+    let data = try JSONSerialization.data(withJSONObject: json)
+
+    var urlRequest = URLRequest(url:URL(string:credentials.TokenURI)!)
+    urlRequest.httpMethod = "POST"
+    urlRequest.httpBody = data
+    urlRequest.setValue("application/json", forHTTPHeaderField:"Content-Type")
+
+    let session = URLSession(configuration: URLSessionConfiguration.default)
+    let task: URLSessionDataTask = session.dataTask(with:urlRequest)
+    {(data, response, error) -> Void in
+      if let data = data,
+         let token = try? JSONDecoder().decode(IDToken.self, from: data) {
+        self.idToken = token
+        self.idToken?.creationTime = Date()
+        completion(self.idToken, error)
+      } else {
+        completion(nil, error)
       }
     }
     task.resume()
