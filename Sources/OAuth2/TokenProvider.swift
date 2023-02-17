@@ -15,3 +15,7 @@
 public protocol TokenProvider {
   func withToken(_ callback:@escaping (Token?, Error?) -> Void) throws
 }
+
+public protocol IDTokenProvider {
+  func withIDToken(_ callback:@escaping (IDToken?, Error?) -> Void) throws
+}

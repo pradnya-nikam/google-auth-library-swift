@@ -47,9 +47,10 @@ public class ServiceAccountTokenProvider : TokenProvider {
   public var idToken: IDToken?
   var credentials : ServiceAccountCredentials
   var scopes : [String]
+  var targetAudience: String?
   var rsaKey : RSAKey
   
-  public init?(credentialsData:Data, scopes:[String]) {
+  public init?(credentialsData:Data, scopes:[String], targetAudience: String? = nil) {
     let decoder = JSONDecoder()
     guard let credentials = try? decoder.decode(ServiceAccountCredentials.self,
                                                 from: credentialsData)
@@ -58,6 +59,7 @@ public class ServiceAccountTokenProvider : TokenProvider {
     }
     self.credentials = credentials
     self.scopes = scopes
+    self.targetAudience = targetAudience
     guard let rsaKey = RSAKey(privateKey:credentials.PrivateKey)
       else {
         return nil
@@ -65,12 +67,13 @@ public class ServiceAccountTokenProvider : TokenProvider {
     self.rsaKey = rsaKey
   }
   
-  convenience public init?(credentialsURL:URL, scopes:[String]) {
+  convenience public init?(credentialsURL:URL, scopes:[String], targetAudience: String? = nil) {
     guard let credentialsData = try? Data(contentsOf:credentialsURL, options:[]) else {
       return nil
     }
-    self.init(credentialsData:credentialsData, scopes:scopes)
+    self.init(credentialsData:credentialsData, scopes:scopes, targetAudience: targetAudience)
   }
+
   public func withToken(_ callback: @escaping (Token?, Error?) -> Void) throws {
 
     // leave spare at least one second :)
@@ -78,29 +81,8 @@ public class ServiceAccountTokenProvider : TokenProvider {
       callback(token, nil)
       return
     }
-  
-    let iat = Date()
-    let exp = iat.addingTimeInterval(3600)
-    let jwtClaimSet = JWTClaimSet(Issuer:credentials.ClientEmail,
-                                  Audience:credentials.TokenURI,
-                                  TargetAudience: nil,
-                                  Scope:  scopes.joined(separator: " "),
-                                  IssuedAt: Int(iat.timeIntervalSince1970),
-                                  Expiration: Int(exp.timeIntervalSince1970))
-    let jwtHeader = JWTHeader(Algorithm: "RS256",
-                              Format: "JWT")
-    let msg = try JWT.encodeWithRS256(jwtHeader:jwtHeader,
-                                      jwtClaimSet:jwtClaimSet,
-                                      rsaKey:rsaKey)
-    let json: [String: Any] = ["grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
-                           "assertion": msg]
-    let data = try JSONSerialization.data(withJSONObject: json)
-  
-    var urlRequest = URLRequest(url:URL(string:credentials.TokenURI)!)
-    urlRequest.httpMethod = "POST"
-    urlRequest.httpBody = data
-    urlRequest.setValue("application/json", forHTTPHeaderField:"Content-Type")
-    
+    let urlRequest =  try createTokenRequest(assertion: generateAssertion(targetAudience: self.targetAudience, scope: scopes.joined(separator: " ")))
+
     let session = URLSession(configuration: URLSessionConfiguration.default)
     let task: URLSessionDataTask = session.dataTask(with:urlRequest)
     {(data, response, error) -> Void in
@@ -116,24 +98,25 @@ public class ServiceAccountTokenProvider : TokenProvider {
     task.resume()
   }
 
-  public func createIDToken(_ targetAudience: String? = nil, completion:@escaping (IDToken?, Error?) -> Void) throws {
+  private func createTokenRequest(assertion: String) throws -> URLRequest {
+    let json = ["grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+                "assertion": assertion]
+    let data = try JSONSerialization.data(withJSONObject: json)
 
-    // leave spare at least one second :)
-    if let idToken = idToken, idToken.timeToExpiry() > 1 {
-      completion(idToken, nil)
-      return
-    }
+    var urlRequest = URLRequest(url:URL(string:credentials.TokenURI)!)
+    urlRequest.httpMethod = "POST"
+    urlRequest.httpBody = data
+    urlRequest.setValue("application/json", forHTTPHeaderField:"Content-Type")
+    return urlRequest
+  }
 
+  private func generateAssertion(targetAudience: String?, scope: String) throws -> String {
     let iat = Date()
     let exp = iat.addingTimeInterval(3600)
-
-    // Remove scope if target audience is present. Scope and target audience both are not supported together.
-
-    let scope = targetAudience == nil ? scopes.joined(separator: " ") : ""
     let jwtClaimSet = JWTClaimSet(Issuer:credentials.ClientEmail,
                                   Audience:credentials.TokenURI,
                                   TargetAudience: targetAudience,
-                                  Scope:  "",
+                                  Scope:  scope,
                                   IssuedAt: Int(iat.timeIntervalSince1970),
                                   Expiration: Int(exp.timeIntervalSince1970))
     let jwtHeader = JWTHeader(Algorithm: "RS256",
@@ -141,17 +124,24 @@ public class ServiceAccountTokenProvider : TokenProvider {
     let msg = try JWT.encodeWithRS256(jwtHeader:jwtHeader,
                                       jwtClaimSet:jwtClaimSet,
                                       rsaKey:rsaKey)
-    let json: [String: Any] = ["grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
-                               "assertion": msg]
-    let data = try JSONSerialization.data(withJSONObject: json)
+    return msg
+  }
+}
 
-    var urlRequest = URLRequest(url:URL(string:credentials.TokenURI)!)
-    urlRequest.httpMethod = "POST"
-    urlRequest.httpBody = data
-    urlRequest.setValue("application/json", forHTTPHeaderField:"Content-Type")
+extension ServiceAccountTokenProvider: IDTokenProvider {
+
+  public func withIDToken(_ completion:@escaping (IDToken?, Error?) -> Void) throws {
+
+    // leave spare at least one second :)
+    if let idToken = idToken, idToken.timeToExpiry() > 1 {
+      completion(idToken, nil)
+      return
+    }
+
+    let urlRequest =  try createTokenRequest(assertion: generateAssertion(targetAudience: self.targetAudience, scope: scopes.joined(separator: " ")))
 
     let session = URLSession(configuration: URLSessionConfiguration.default)
-    let task: URLSessionDataTask = session.dataTask(with:urlRequest)
+    let task: URLSessionDataTask = session.dataTask(with: urlRequest)
     {(data, response, error) -> Void in
       if let data = data,
          let token = try? JSONDecoder().decode(IDToken.self, from: data) {
